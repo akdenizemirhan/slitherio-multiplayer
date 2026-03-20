@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slither.io Multiplayer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            overflow: hidden;
+            cursor: none;
+            font-family: 'Segoe UI', Arial, sans-serif;
+        }
+        canvas { display: block; }
+        #score {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            color: #fff; font-size: 24px; font-weight: bold;
+            text-shadow: 0 0 10px rgba(0,0,0,0.8); z-index: 20;
+            transition: text-shadow 0.3s;
+        }
+        #minimap {
+            position: fixed; bottom: 20px; right: 20px; width: 180px; height: 180px;
+            border: 2px solid rgba(255,255,255,0.3); border-radius: 8px;
+            background: rgba(0,0,0,0.5); z-index: 20;
+        }
+        #leaderboard {
+            position: fixed; top: 20px; right: 20px; color: #fff; font-size: 14px;
+            background: rgba(0,0,0,0.5); padding: 12px 16px; border-radius: 8px;
+            z-index: 20; min-width: 160px;
+        }
+        #leaderboard h3 { margin-bottom: 8px; text-align: center; font-size: 16px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 6px; }
+        #leaderboard .entry { padding: 2px 0; display: flex; justify-content: space-between; }
+        #leaderboard .entry.self { color: #0f0; font-weight: bold; }
+        #online-count {
+            position: fixed; top: 20px; left: 20px; color: rgba(255,255,255,0.6);
+            font-size: 14px; z-index: 20;
+        }
+        #start-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a15 100%);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 100; pointer-events: all;
+        }
+        #start-screen h1 { font-size: 72px; color: #0f0; text-shadow: 0 0 30px rgba(0,255,0,0.5); margin-bottom: 10px; letter-spacing: 4px; }
+        #start-screen .subtitle { color: rgba(255,255,255,0.5); font-size: 16px; margin-bottom: 10px; }
+        #start-screen .mp-badge { color: #0ff; font-size: 14px; margin-bottom: 30px; letter-spacing: 2px; }
+        #nickname-input {
+            padding: 14px 24px; font-size: 20px; border: 2px solid rgba(0,255,0,0.4);
+            border-radius: 30px; background: rgba(255,255,255,0.1); color: #fff;
+            text-align: center; outline: none; width: 300px; margin-bottom: 20px; transition: border-color 0.3s;
+        }
+        #nickname-input:focus { border-color: #0f0; }
+        #nickname-input::placeholder { color: rgba(255,255,255,0.3); }
+        #play-btn {
+            padding: 16px 60px; font-size: 22px; border: none; border-radius: 30px;
+            background: linear-gradient(135deg, #0f0, #0a0); color: #fff; cursor: pointer;
+            font-weight: bold; letter-spacing: 2px; transition: transform 0.2s, box-shadow 0.2s; pointer-events: all;
+        }
+        #play-btn:hover { transform: scale(1.05); box-shadow: 0 0 30px rgba(0,255,0,0.4); }
+        #death-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); display: none; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 100; pointer-events: all;
+        }
+        #death-screen h2 { font-size: 48px; color: #f44; margin-bottom: 10px; }
+        #death-screen .final-score { font-size: 24px; color: #fff; margin-bottom: 30px; }
+        #death-screen button {
+            padding: 14px 50px; font-size: 20px; border: none; border-radius: 30px;
+            background: linear-gradient(135deg, #0f0, #0a0); color: #fff; cursor: pointer;
+            font-weight: bold; letter-spacing: 2px; transition: transform 0.2s;
+        }
+        #death-screen button:hover { transform: scale(1.05); }
+        #boost-bar-container {
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+            width: 200px; height: 8px; background: rgba(255,255,255,0.15);
+            border-radius: 4px; z-index: 20;
+        }
+        #boost-bar { height: 100%; background: linear-gradient(90deg, #0f0, #0ff); border-radius: 4px; width: 100%; transition: width 0.1s; }
+    </style>
+</head>
+<body>
+    <canvas id="game"></canvas>
+    <div id="score">Skor: 0</div>
+    <canvas id="minimap"></canvas>
+    <div id="leaderboard"><h3>Liderlik</h3></div>
+    <div id="online-count"></div>
+    <div id="boost-bar-container"><div id="boost-bar"></div></div>
+
+    <div id="start-screen">
+        <h1>SLITHER.IO</h1>
+        <div class="subtitle">Yilan ol, buyuk ol, hayatta kal!</div>
+        <div class="mp-badge">MULTIPLAYER</div>
+        <input type="text" id="nickname-input" placeholder="Nickin ne?" maxlength="15">
+        <button id="play-btn">OYNA</button>
+    </div>
+
+    <div id="death-screen">
+        <h2>Oldin!</h2>
+        <div class="final-score"></div>
+        <button id="retry-btn">Tekrar Oyna</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+    // ============== SETUP ==============
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const minimapCanvas = document.getElementById('minimap');
+    const minimapCtx = minimapCanvas.getContext('2d');
+
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        minimapCanvas.width = 180;
+        minimapCanvas.height = 180;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // ============== STATE ==============
+    const socket = io();
+    let CONFIG = {};
+    let myId = null;
+    let gameRunning = false;
+    let playerNickname = 'Oyuncu';
+    let snakes = [];
+    const foodMap = new Map();
+    let particles = [];
+    let camera = { x: 0, y: 0, zoom: 1 };
+    let mouseX = canvas.width / 2;
+    let mouseY = canvas.height / 2;
+    let mouseDown = false;
+
+    // ============== EASTER EGG ==============
+    let spaceCount = 0;
+    let spaceTimer = null;
+    let autoCollect = false;
+
+    document.addEventListener('keydown', (e) => {
+        if (e.code === 'Space' && gameRunning) {
+            e.preventDefault();
+            spaceCount++;
+            if (spaceTimer) clearTimeout(spaceTimer);
+            spaceTimer = setTimeout(() => { spaceCount = 0; }, 600);
+            if (spaceCount >= 3) {
+                autoCollect = !autoCollect;
+                spaceCount = 0;
+                // Subtle visual hint
+                const scoreEl = document.getElementById('score');
+                if (autoCollect) {
+                    scoreEl.style.textShadow = '0 0 15px rgba(0,255,255,0.8)';
+                } else {
+                    scoreEl.style.textShadow = '0 0 10px rgba(0,0,0,0.8)';
+                }
+            }
+        }
+    });
+
+    // ============== SOCKET EVENTS ==============
+    socket.on('joined', (data) => {
+        myId = data.id;
+        CONFIG = data.config;
+        gameRunning = true;
+        document.getElementById('start-screen').style.display = 'none';
+        document.getElementById('death-screen').style.display = 'none';
+    });
+
+    socket.on('foodSync', (foods) => {
+        foodMap.clear();
+        for (const f of foods) foodMap.set(f.id, f);
+    });
+
+    socket.on('state', (data) => {
+        snakes = data.snakes;
+
+        // Food delta
+        if (data.eatenFoods) {
+            for (const id of data.eatenFoods) {
+                const food = foodMap.get(id);
+                if (food) {
+                    // Particle effect for eaten food
+                    for (let p = 0; p < 3; p++) {
+                        particles.push({
+                            x: food.x, y: food.y,
+                            vx: (Math.random() - 0.5) * 4, vy: (Math.random() - 0.5) * 4,
+                            life: 0.5, color: food.color, radius: 3,
+                        });
+                    }
+                }
+                foodMap.delete(id);
+            }
+        }
+        if (data.newFoods) {
+            for (const f of data.newFoods) foodMap.set(f.id, f);
+        }
+
+        // Camera follow
+        const me = snakes.find(s => s.id === myId);
+        if (me && me.alive && me.segments.length > 0) {
+            camera.x += (me.segments[0].x - camera.x) * 0.15;
+            camera.y += (me.segments[0].y - camera.y) * 0.15;
+            const targetZoom = Math.max(0.5, 1 - me.segments.length * 0.002);
+            camera.zoom += (targetZoom - camera.zoom) * 0.03;
+        }
+
+        // Online count
+        const playerCount = snakes.filter(s => !s.id.startsWith('bot_')).length;
+        document.getElementById('online-count').textContent = playerCount + ' oyuncu online';
+    });
+
+    socket.on('died', (data) => {
+        document.getElementById('death-screen').style.display = 'flex';
+        document.querySelector('#death-screen .final-score').textContent =
+            'Skor: ' + data.score + ' | Uzunluk: ' + data.length;
+        autoCollect = false;
+        document.getElementById('score').style.textShadow = '0 0 10px rgba(0,0,0,0.8)';
+    });
+
+    // ============== INPUT ==============
+    canvas.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
+    canvas.addEventListener('mousedown', () => { mouseDown = true; });
+    canvas.addEventListener('mouseup', () => { mouseDown = false; });
+    canvas.addEventListener('touchstart', (e) => { e.preventDefault(); mouseDown = true; mouseX = e.touches[0].clientX; mouseY = e.touches[0].clientY; });
+    canvas.addEventListener('touchmove', (e) => { e.preventDefault(); mouseX = e.touches[0].clientX; mouseY = e.touches[0].clientY; });
+    canvas.addEventListener('touchend', () => { mouseDown = false; });
+
+    // Send input to server
+    setInterval(() => {
+        if (!gameRunning) return;
+        const me = snakes.find(s => s.id === myId);
+        if (!me || !me.alive) return;
+
+        let angle;
+        if (autoCollect) {
+            // Easter egg: auto-aim nearest food
+            let nearest = null;
+            let nearDist = Infinity;
+            for (const food of foodMap.values()) {
+                const dx = food.x - me.segments[0].x;
+                const dy = food.y - me.segments[0].y;
+                const dist = dx * dx + dy * dy;
+                if (dist < nearDist) { nearDist = dist; nearest = food; }
+            }
+            if (nearest) {
+                angle = Math.atan2(nearest.y - me.segments[0].y, nearest.x - me.segments[0].x);
+            } else {
+                angle = Math.atan2(mouseY - canvas.height / 2, mouseX - canvas.width / 2);
+            }
+        } else {
+            angle = Math.atan2(mouseY - canvas.height / 2, mouseX - canvas.width / 2);
+        }
+
+        socket.emit('input', { angle, boosting: mouseDown });
+    }, 1000 / 30);
+
+    // ============== BUTTONS ==============
+    document.getElementById('play-btn').addEventListener('click', () => {
+        const input = document.getElementById('nickname-input').value.trim();
+        if (input) playerNickname = input;
+        socket.emit('join', { nickname: playerNickname });
+    });
+    document.getElementById('nickname-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') document.getElementById('play-btn').click();
+    });
+    document.getElementById('retry-btn').addEventListener('click', () => {
+        socket.emit('respawn', { nickname: playerNickname });
+        gameRunning = true;
+        document.getElementById('death-screen').style.display = 'none';
+    });
+
+    // ============== DRAWING ==============
+    function drawGrid() {
+        const gridSize = 50;
+        const startX = Math.floor((camera.x - canvas.width / 2 / camera.zoom) / gridSize) * gridSize;
+        const startY = Math.floor((camera.y - canvas.height / 2 / camera.zoom) / gridSize) * gridSize;
+        const endX = camera.x + canvas.width / 2 / camera.zoom;
+        const endY = camera.y + canvas.height / 2 / camera.zoom;
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.lineWidth = 1;
+        for (let x = startX; x <= endX; x += gridSize) {
+            const sx = (x - camera.x) * camera.zoom + canvas.width / 2;
+            ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, canvas.height); ctx.stroke();
+        }
+        for (let y = startY; y <= endY; y += gridSize) {
+            const sy = (y - camera.y) * camera.zoom + canvas.height / 2;
+            ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(canvas.width, sy); ctx.stroke();
+        }
+    }
+
+    function drawBoundary() {
+        const half = CONFIG.WORLD_SIZE / 2;
+        if (!half) return;
+        ctx.strokeStyle = 'rgba(255, 50, 50, 0.6)';
+        ctx.lineWidth = 4 * camera.zoom;
+        const x = (-half - camera.x) * camera.zoom + canvas.width / 2;
+        const y = (-half - camera.y) * camera.zoom + canvas.height / 2;
+        const w = CONFIG.WORLD_SIZE * camera.zoom;
+        ctx.strokeRect(x, y, w, w);
+    }
+
+    function drawFoods() {
+        const time = Date.now() / 1000;
+        for (const food of foodMap.values()) {
+            const sx = (food.x - camera.x) * camera.zoom + canvas.width / 2;
+            const sy = (food.y - camera.y) * camera.zoom + canvas.height / 2;
+            if (sx < -20 || sx > canvas.width + 20 || sy < -20 || sy > canvas.height + 20) continue;
+
+            const r = food.radius * camera.zoom;
+            const pulse = 1 + Math.sin(time * 3 + food.x) * 0.2;
+
+            ctx.beginPath();
+            ctx.arc(sx, sy, r * pulse * 2, 0, Math.PI * 2);
+            ctx.fillStyle = food.color + '20';
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(sx, sy, r * pulse, 0, Math.PI * 2);
+            ctx.fillStyle = food.color;
+            ctx.fill();
+        }
+    }
+
+    function drawSnake(snake) {
+        if (!snake.alive || !snake.segments || snake.segments.length === 0) return;
+
+        const radius = 12 + Math.min(snake.segments.length * 0.15, 12);
+
+        // Body
+        for (let i = snake.segments.length - 1; i >= 0; i--) {
+            const seg = snake.segments[i];
+            const sx = (seg.x - camera.x) * camera.zoom + canvas.width / 2;
+            const sy = (seg.y - camera.y) * camera.zoom + canvas.height / 2;
+            const r = radius * camera.zoom;
+
+            if (sx < -r * 2 || sx > canvas.width + r * 2 || sy < -r * 2 || sy > canvas.height + r * 2) continue;
+
+            const colorIdx = i % snake.colors.length;
+
+            // Glow
+            ctx.beginPath();
+            ctx.arc(sx, sy, r + 4 * camera.zoom, 0, Math.PI * 2);
+            ctx.fillStyle = snake.colors[colorIdx] + '30';
+            ctx.fill();
+
+            // Body
+            ctx.beginPath();
+            ctx.arc(sx, sy, r, 0, Math.PI * 2);
+            ctx.fillStyle = snake.colors[colorIdx];
+            ctx.fill();
+
+            // Highlight
+            ctx.beginPath();
+            ctx.arc(sx - r * 0.25, sy - r * 0.25, r * 0.4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.fill();
+        }
+
+        // Eyes
+        const head = snake.segments[0];
+        const hx = (head.x - camera.x) * camera.zoom + canvas.width / 2;
+        const hy = (head.y - camera.y) * camera.zoom + canvas.height / 2;
+        const hr = radius * camera.zoom;
+        const eyeAngle = snake.angle;
+        const eyeOffset = hr * 0.45;
+        const eyeR = hr * 0.35;
+        const pupilR = hr * 0.18;
+
+        for (let side = -1; side <= 1; side += 2) {
+            const ex = hx + Math.cos(eyeAngle + side * 0.5) * eyeOffset;
+            const ey = hy + Math.sin(eyeAngle + side * 0.5) * eyeOffset;
+            ctx.beginPath(); ctx.arc(ex, ey, eyeR, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+            ctx.beginPath();
+            ctx.arc(ex + Math.cos(eyeAngle) * pupilR * 0.5, ey + Math.sin(eyeAngle) * pupilR * 0.5, pupilR, 0, Math.PI * 2);
+            ctx.fillStyle = '#111'; ctx.fill();
+        }
+
+        // Name
+        ctx.fillStyle = snake.id === myId ? '#0f0' : '#fff';
+        ctx.font = `bold ${14 * camera.zoom}px 'Segoe UI', Arial`;
+        ctx.textAlign = 'center';
+        ctx.fillText(snake.name, hx, hy - hr - 10 * camera.zoom);
+    }
+
+    function drawParticles() {
+        for (let i = particles.length - 1; i >= 0; i--) {
+            const p = particles[i];
+            p.x += p.vx; p.y += p.vy;
+            p.life -= 0.02; p.vx *= 0.96; p.vy *= 0.96;
+            if (p.life <= 0) { particles.splice(i, 1); continue; }
+
+            const sx = (p.x - camera.x) * camera.zoom + canvas.width / 2;
+            const sy = (p.y - camera.y) * camera.zoom + canvas.height / 2;
+            ctx.globalAlpha = p.life;
+            ctx.beginPath();
+            ctx.arc(sx, sy, p.radius * camera.zoom, 0, Math.PI * 2);
+            ctx.fillStyle = p.color;
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    function drawMinimap() {
+        const me = snakes.find(s => s.id === myId);
+        if (!me || !me.alive || !CONFIG.WORLD_SIZE) return;
+
+        const mCtx = minimapCtx;
+        const mw = 180, mh = 180;
+        const scale = mw / CONFIG.WORLD_SIZE;
+
+        mCtx.clearRect(0, 0, mw, mh);
+        mCtx.fillStyle = 'rgba(0,0,0,0.6)';
+        mCtx.fillRect(0, 0, mw, mh);
+        mCtx.strokeStyle = 'rgba(255,255,255,0.15)';
+        mCtx.strokeRect(0, 0, mw, mh);
+
+        for (const snake of snakes) {
+            if (!snake.alive || !snake.segments.length) continue;
+            const bx = (snake.segments[0].x + CONFIG.WORLD_SIZE / 2) * scale;
+            const by = (snake.segments[0].y + CONFIG.WORLD_SIZE / 2) * scale;
+            mCtx.beginPath();
+            mCtx.arc(bx, by, snake.id === myId ? 4 : 2, 0, Math.PI * 2);
+            mCtx.fillStyle = snake.id === myId ? '#0f0' : snake.colors[0] + '80';
+            mCtx.fill();
+        }
+
+        const vw = (canvas.width / camera.zoom) * scale;
+        const vh = (canvas.height / camera.zoom) * scale;
+        const px = (me.segments[0].x + CONFIG.WORLD_SIZE / 2) * scale;
+        const py = (me.segments[0].y + CONFIG.WORLD_SIZE / 2) * scale;
+        mCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+        mCtx.lineWidth = 1;
+        mCtx.strokeRect(px - vw / 2, py - vh / 2, vw, vh);
+    }
+
+    function updateLeaderboard() {
+        const sorted = [...snakes].filter(s => s.alive).sort((a, b) => b.score - a.score).slice(0, 10);
+        const container = document.getElementById('leaderboard');
+        while (container.children.length > 1) container.removeChild(container.lastChild);
+
+        sorted.forEach((snake, i) => {
+            const entry = document.createElement('div');
+            entry.className = snake.id === myId ? 'entry self' : 'entry';
+            const dot = document.createElement('span');
+            dot.style.color = snake.colors[0];
+            dot.textContent = '\u25CF ' + (i + 1) + '. ' + snake.name;
+            const sc = document.createElement('span');
+            sc.textContent = snake.score;
+            entry.appendChild(dot);
+            entry.appendChild(sc);
+            container.appendChild(entry);
+        });
+    }
+
+    function updateUI() {
+        const me = snakes.find(s => s.id === myId);
+        if (me && me.alive) {
+            document.getElementById('score').textContent = 'Skor: ' + me.score + ' | Uzunluk: ' + me.segments.length;
+            document.getElementById('boost-bar').style.width = me.boostEnergy + '%';
+        }
+    }
+
+    // ============== GAME LOOP ==============
+    let lastLeaderboardUpdate = 0;
+
+    function gameLoop(timestamp) {
+        ctx.fillStyle = '#0a0a15';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (gameRunning) {
+            drawGrid();
+            drawBoundary();
+            drawFoods();
+
+            // Draw other snakes first, then self on top
+            for (const snake of snakes) {
+                if (snake.id !== myId) drawSnake(snake);
+            }
+            const me = snakes.find(s => s.id === myId);
+            if (me) drawSnake(me);
+
+            drawParticles();
+            drawMinimap();
+            updateUI();
+
+            if (timestamp - lastLeaderboardUpdate > 1000) {
+                updateLeaderboard();
+                lastLeaderboardUpdate = timestamp;
+            }
+        }
+
+        // Cursor
+        ctx.beginPath();
+        ctx.arc(mouseX, mouseY, 6, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(mouseX, mouseY, 2, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    requestAnimationFrame(gameLoop);
+    document.getElementById('nickname-input').focus();
+    </script>
+</body>
+</html>
