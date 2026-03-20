@@ -6,18 +6,12 @@
     <title>Slither.io Multiplayer</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            background: #000;
-            overflow: hidden;
-            cursor: none;
-            font-family: 'Segoe UI', Arial, sans-serif;
-        }
+        body { background: #000; overflow: hidden; cursor: none; font-family: 'Segoe UI', Arial, sans-serif; }
         canvas { display: block; }
         #score {
             position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
             color: #fff; font-size: 24px; font-weight: bold;
-            text-shadow: 0 0 10px rgba(0,0,0,0.8); z-index: 20;
-            transition: text-shadow 0.3s;
+            text-shadow: 0 0 10px rgba(0,0,0,0.8); z-index: 20; transition: text-shadow 0.3s;
         }
         #minimap {
             position: fixed; bottom: 20px; right: 20px; width: 180px; height: 180px;
@@ -32,10 +26,7 @@
         #leaderboard h3 { margin-bottom: 8px; text-align: center; font-size: 16px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 6px; }
         #leaderboard .entry { padding: 2px 0; display: flex; justify-content: space-between; }
         #leaderboard .entry.self { color: #0f0; font-weight: bold; }
-        #online-count {
-            position: fixed; top: 20px; left: 20px; color: rgba(255,255,255,0.6);
-            font-size: 14px; z-index: 20;
-        }
+        #online-count { position: fixed; top: 20px; left: 20px; color: rgba(255,255,255,0.6); font-size: 14px; z-index: 20; }
         #start-screen {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a15 100%);
@@ -73,8 +64,7 @@
         #death-screen button:hover { transform: scale(1.05); }
         #boost-bar-container {
             position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-            width: 200px; height: 8px; background: rgba(255,255,255,0.15);
-            border-radius: 4px; z-index: 20;
+            width: 200px; height: 8px; background: rgba(255,255,255,0.15); border-radius: 4px; z-index: 20;
         }
         #boost-bar { height: 100%; background: linear-gradient(90deg, #0f0, #0ff); border-radius: 4px; width: 100%; transition: width 0.1s; }
     </style>
@@ -108,6 +98,7 @@
     const ctx = canvas.getContext('2d');
     const minimapCanvas = document.getElementById('minimap');
     const minimapCtx = minimapCanvas.getContext('2d');
+    const SEGMENT_SPACING = 12;
 
     function resizeCanvas() {
         canvas.width = window.innerWidth;
@@ -124,18 +115,22 @@
     let myId = null;
     let gameRunning = false;
     let playerNickname = 'Oyuncu';
-    let snakes = [];
+    const serverSnakes = new Map();  // id -> server data (lightweight)
+    const localSnakes = new Map();   // id -> { segments, ...renderData }
     const foodMap = new Map();
     let particles = [];
     let camera = { x: 0, y: 0, zoom: 1 };
     let mouseX = canvas.width / 2;
     let mouseY = canvas.height / 2;
     let mouseDown = false;
+    let myAngle = 0;
+    let mySpeed = 3.2;
 
     // ============== EASTER EGG ==============
     let spaceCount = 0;
     let spaceTimer = null;
-    let autoCollect = false;
+    let beastMode = false;
+    let coilTarget = null;
 
     document.addEventListener('keydown', (e) => {
         if (e.code === 'Space' && gameRunning) {
@@ -144,18 +139,206 @@
             if (spaceTimer) clearTimeout(spaceTimer);
             spaceTimer = setTimeout(() => { spaceCount = 0; }, 600);
             if (spaceCount >= 3) {
-                autoCollect = !autoCollect;
+                beastMode = !beastMode;
+                coilTarget = null;
                 spaceCount = 0;
-                // Subtle visual hint
                 const scoreEl = document.getElementById('score');
-                if (autoCollect) {
-                    scoreEl.style.textShadow = '0 0 15px rgba(0,255,255,0.8)';
-                } else {
-                    scoreEl.style.textShadow = '0 0 10px rgba(0,0,0,0.8)';
-                }
+                scoreEl.style.textShadow = beastMode
+                    ? '0 0 20px rgba(255,0,80,0.9), 0 0 40px rgba(255,0,80,0.4)'
+                    : '0 0 10px rgba(0,0,0,0.8)';
             }
         }
     });
+
+    // ============== BEAST MODE AI ==============
+    function getBeastInput(me) {
+        const mySegs = localSnakes.get(myId);
+        if (!mySegs) return null;
+
+        // Find nearest enemy that we can coil
+        let bestTarget = null;
+        let bestDist = Infinity;
+
+        for (const [id, snake] of serverSnakes) {
+            if (id === myId || !snake.alive) continue;
+            const dx = snake.x - me.x;
+            const dy = snake.y - me.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            // Coil condition: we are at least 1.5x longer AND within range
+            if (me.len >= snake.len * 1.5 && dist < 500 && dist < bestDist) {
+                bestDist = dist;
+                bestTarget = snake;
+            }
+        }
+
+        // If we have a valid coil target
+        if (bestTarget) {
+            coilTarget = bestTarget.id;
+            const dx = bestTarget.x - me.x;
+            const dy = bestTarget.y - me.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const angleToEnemy = Math.atan2(dy, dx);
+
+            if (dist > 180) {
+                // Phase 1: Approach fast
+                return { angle: angleToEnemy, boosting: true };
+            } else {
+                // Phase 2: Coil! Circle around them clockwise
+                // Tangent = angle to enemy + 90 degrees (clockwise orbit)
+                const tangent = angleToEnemy + Math.PI / 2;
+                // Pull inward slightly to tighten the coil
+                const pullStrength = dist > 120 ? 0.15 : (dist > 80 ? 0 : -0.2);
+                const finalAngle = tangent + pullStrength;
+                return { angle: finalAngle, boosting: true };
+            }
+        }
+
+        coilTarget = null;
+
+        // No coil target - smart food collection
+        // Prefer nearby food clusters and bigger food (from dead snakes)
+        let bestFood = null;
+        let bestScore = -Infinity;
+
+        for (const food of foodMap.values()) {
+            const dx = food.x - me.x;
+            const dy = food.y - me.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > 800) continue;
+
+            // Score: closer = better, bigger = better
+            const score = (food.radius || 6) / Math.max(dist, 1) * 1000;
+            if (score > bestScore) {
+                bestScore = score;
+                bestFood = food;
+            }
+        }
+
+        if (bestFood) {
+            return {
+                angle: Math.atan2(bestFood.y - me.y, bestFood.x - me.x),
+                boosting: false
+            };
+        }
+        return null;
+    }
+
+    // ============== LOCAL SEGMENT TRACKING ==============
+    function updateLocalSnake(id, data) {
+        let local = localSnakes.get(id);
+
+        if (!local) {
+            // New snake - create segments from head
+            const segs = [];
+            for (let i = 0; i < data.len; i++) {
+                segs.push({
+                    x: data.x - Math.cos(data.angle) * i * SEGMENT_SPACING,
+                    y: data.y - Math.sin(data.angle) * i * SEGMENT_SPACING,
+                });
+            }
+            local = { segments: segs, targetX: data.x, targetY: data.y };
+            localSnakes.set(id, local);
+        } else {
+            local.targetX = data.x;
+            local.targetY = data.y;
+        }
+
+        // Adjust length
+        while (local.segments.length < data.len) {
+            const last = local.segments[local.segments.length - 1];
+            local.segments.push({ x: last.x, y: last.y });
+        }
+        while (local.segments.length > data.len) {
+            local.segments.pop();
+        }
+    }
+
+    function tickLocalSegments() {
+        for (const [id, local] of localSnakes) {
+            if (id === myId) continue; // Own snake handled by prediction
+            const head = local.segments[0];
+            if (!head) continue;
+
+            head.x += (local.targetX - head.x) * 0.35;
+            head.y += (local.targetY - head.y) * 0.35;
+
+            for (let i = 1; i < local.segments.length; i++) {
+                const prev = local.segments[i - 1];
+                const curr = local.segments[i];
+                const dx = prev.x - curr.x;
+                const dy = prev.y - curr.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > SEGMENT_SPACING) {
+                    const ratio = SEGMENT_SPACING / dist;
+                    curr.x = prev.x - dx * ratio;
+                    curr.y = prev.y - dy * ratio;
+                }
+            }
+        }
+    }
+
+    // ============== CLIENT-SIDE PREDICTION ==============
+    function predictOwnSnake() {
+        const local = localSnakes.get(myId);
+        const data = serverSnakes.get(myId);
+        if (!local || !data || !data.alive || local.segments.length === 0) return;
+
+        // Calculate target angle
+        let targetAngle;
+        let boosting;
+        if (beastMode) {
+            const result = getBeastInput(data);
+            if (result) { targetAngle = result.angle; boosting = result.boosting; }
+            else { targetAngle = Math.atan2(mouseY - canvas.height / 2, mouseX - canvas.width / 2); boosting = mouseDown; }
+        } else {
+            targetAngle = Math.atan2(mouseY - canvas.height / 2, mouseX - canvas.width / 2);
+            boosting = mouseDown;
+        }
+
+        // Turn smoothly
+        let diff = targetAngle - myAngle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        myAngle += Math.sign(diff) * Math.min(Math.abs(diff), 0.08);
+
+        // Speed
+        mySpeed = (boosting && data.boostEnergy > 0) ? 6 : 3.2;
+
+        // Move head locally
+        const head = local.segments[0];
+        head.x += Math.cos(myAngle) * mySpeed;
+        head.y += Math.sin(myAngle) * mySpeed;
+
+        // Clamp to world bounds
+        const halfWorld = (CONFIG.WORLD_SIZE || 5000) / 2 - 100;
+        head.x = Math.max(-halfWorld, Math.min(halfWorld, head.x));
+        head.y = Math.max(-halfWorld, Math.min(halfWorld, head.y));
+
+        // Gentle server correction (keeps us in sync without snapping)
+        head.x += (local.targetX - head.x) * 0.08;
+        head.y += (local.targetY - head.y) * 0.08;
+
+        // Body follows
+        for (let i = 1; i < local.segments.length; i++) {
+            const prev = local.segments[i - 1];
+            const curr = local.segments[i];
+            const dx = prev.x - curr.x;
+            const dy = prev.y - curr.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > SEGMENT_SPACING) {
+                const ratio = SEGMENT_SPACING / dist;
+                curr.x = prev.x - dx * ratio;
+                curr.y = prev.y - dy * ratio;
+            }
+        }
+
+        // Camera follows predicted position (smooth)
+        camera.x += (head.x - camera.x) * 0.12;
+        camera.y += (head.y - camera.y) * 0.12;
+        const targetZoom = Math.max(0.5, 1 - local.segments.length * 0.002);
+        camera.zoom += (targetZoom - camera.zoom) * 0.03;
+    }
 
     // ============== SOCKET EVENTS ==============
     socket.on('joined', (data) => {
@@ -172,14 +355,33 @@
     });
 
     socket.on('state', (data) => {
-        snakes = data.snakes;
+        // Track which snakes are still present
+        const activeIds = new Set();
+
+        for (const snake of data.snakes) {
+            activeIds.add(snake.id);
+            serverSnakes.set(snake.id, snake);
+
+            if (snake.alive) {
+                updateLocalSnake(snake.id, snake);
+            } else {
+                localSnakes.delete(snake.id);
+            }
+        }
+
+        // Remove disconnected snakes
+        for (const id of serverSnakes.keys()) {
+            if (!activeIds.has(id)) {
+                serverSnakes.delete(id);
+                localSnakes.delete(id);
+            }
+        }
 
         // Food delta
         if (data.eatenFoods) {
             for (const id of data.eatenFoods) {
                 const food = foodMap.get(id);
                 if (food) {
-                    // Particle effect for eaten food
                     for (let p = 0; p < 3; p++) {
                         particles.push({
                             x: food.x, y: food.y,
@@ -195,17 +397,8 @@
             for (const f of data.newFoods) foodMap.set(f.id, f);
         }
 
-        // Camera follow
-        const me = snakes.find(s => s.id === myId);
-        if (me && me.alive && me.segments.length > 0) {
-            camera.x += (me.segments[0].x - camera.x) * 0.15;
-            camera.y += (me.segments[0].y - camera.y) * 0.15;
-            const targetZoom = Math.max(0.5, 1 - me.segments.length * 0.002);
-            camera.zoom += (targetZoom - camera.zoom) * 0.03;
-        }
-
         // Online count
-        const playerCount = snakes.filter(s => !s.id.startsWith('bot_')).length;
+        const playerCount = data.snakes.filter(s => !s.id.startsWith('bot_')).length;
         document.getElementById('online-count').textContent = playerCount + ' oyuncu online';
     });
 
@@ -213,7 +406,8 @@
         document.getElementById('death-screen').style.display = 'flex';
         document.querySelector('#death-screen .final-score').textContent =
             'Skor: ' + data.score + ' | Uzunluk: ' + data.length;
-        autoCollect = false;
+        beastMode = false;
+        coilTarget = null;
         document.getElementById('score').style.textShadow = '0 0 10px rgba(0,0,0,0.8)';
     });
 
@@ -225,33 +419,21 @@
     canvas.addEventListener('touchmove', (e) => { e.preventDefault(); mouseX = e.touches[0].clientX; mouseY = e.touches[0].clientY; });
     canvas.addEventListener('touchend', () => { mouseDown = false; });
 
-    // Send input to server
+    // Send predicted input to server
     setInterval(() => {
         if (!gameRunning) return;
-        const me = snakes.find(s => s.id === myId);
+        const me = serverSnakes.get(myId);
         if (!me || !me.alive) return;
 
-        let angle;
-        if (autoCollect) {
-            // Easter egg: auto-aim nearest food
-            let nearest = null;
-            let nearDist = Infinity;
-            for (const food of foodMap.values()) {
-                const dx = food.x - me.segments[0].x;
-                const dy = food.y - me.segments[0].y;
-                const dist = dx * dx + dy * dy;
-                if (dist < nearDist) { nearDist = dist; nearest = food; }
-            }
-            if (nearest) {
-                angle = Math.atan2(nearest.y - me.segments[0].y, nearest.x - me.segments[0].x);
-            } else {
-                angle = Math.atan2(mouseY - canvas.height / 2, mouseX - canvas.width / 2);
-            }
+        let boosting;
+        if (beastMode) {
+            const result = getBeastInput(me);
+            boosting = result ? result.boosting : mouseDown;
         } else {
-            angle = Math.atan2(mouseY - canvas.height / 2, mouseX - canvas.width / 2);
+            boosting = mouseDown;
         }
 
-        socket.emit('input', { angle, boosting: mouseDown });
+        socket.emit('input', { angle: myAngle, boosting });
     }, 1000 / 30);
 
     // ============== BUTTONS ==============
@@ -276,7 +458,6 @@
         const startY = Math.floor((camera.y - canvas.height / 2 / camera.zoom) / gridSize) * gridSize;
         const endX = camera.x + canvas.width / 2 / camera.zoom;
         const endY = camera.y + canvas.height / 2 / camera.zoom;
-
         ctx.strokeStyle = 'rgba(255,255,255,0.05)';
         ctx.lineWidth = 1;
         for (let x = startX; x <= endX; x += gridSize) {
@@ -296,8 +477,7 @@
         ctx.lineWidth = 4 * camera.zoom;
         const x = (-half - camera.x) * camera.zoom + canvas.width / 2;
         const y = (-half - camera.y) * camera.zoom + canvas.height / 2;
-        const w = CONFIG.WORLD_SIZE * camera.zoom;
-        ctx.strokeRect(x, y, w, w);
+        ctx.strokeRect(x, y, CONFIG.WORLD_SIZE * camera.zoom, CONFIG.WORLD_SIZE * camera.zoom);
     }
 
     function drawFoods() {
@@ -306,15 +486,12 @@
             const sx = (food.x - camera.x) * camera.zoom + canvas.width / 2;
             const sy = (food.y - camera.y) * camera.zoom + canvas.height / 2;
             if (sx < -20 || sx > canvas.width + 20 || sy < -20 || sy > canvas.height + 20) continue;
-
-            const r = food.radius * camera.zoom;
+            const r = (food.radius || 6) * camera.zoom;
             const pulse = 1 + Math.sin(time * 3 + food.x) * 0.2;
-
             ctx.beginPath();
             ctx.arc(sx, sy, r * pulse * 2, 0, Math.PI * 2);
             ctx.fillStyle = food.color + '20';
             ctx.fill();
-
             ctx.beginPath();
             ctx.arc(sx, sy, r * pulse, 0, Math.PI * 2);
             ctx.fillStyle = food.color;
@@ -322,50 +499,52 @@
         }
     }
 
-    function drawSnake(snake) {
-        if (!snake.alive || !snake.segments || snake.segments.length === 0) return;
+    function drawSnake(id) {
+        const data = serverSnakes.get(id);
+        const local = localSnakes.get(id);
+        if (!data || !data.alive || !local || local.segments.length === 0) return;
 
-        const radius = 12 + Math.min(snake.segments.length * 0.15, 12);
+        const radius = (12 + Math.min(local.segments.length * 0.15, 12)) * camera.zoom;
+        const isCoilTarget = beastMode && coilTarget === id;
 
-        // Body
-        for (let i = snake.segments.length - 1; i >= 0; i--) {
-            const seg = snake.segments[i];
+        for (let i = local.segments.length - 1; i >= 0; i--) {
+            const seg = local.segments[i];
             const sx = (seg.x - camera.x) * camera.zoom + canvas.width / 2;
             const sy = (seg.y - camera.y) * camera.zoom + canvas.height / 2;
-            const r = radius * camera.zoom;
+            if (sx < -radius * 2 || sx > canvas.width + radius * 2 || sy < -radius * 2 || sy > canvas.height + radius * 2) continue;
 
-            if (sx < -r * 2 || sx > canvas.width + r * 2 || sy < -r * 2 || sy > canvas.height + r * 2) continue;
+            const colorIdx = i % data.colors.length;
 
-            const colorIdx = i % snake.colors.length;
-
-            // Glow
+            // Glow (red pulse for coil target)
             ctx.beginPath();
-            ctx.arc(sx, sy, r + 4 * camera.zoom, 0, Math.PI * 2);
-            ctx.fillStyle = snake.colors[colorIdx] + '30';
+            ctx.arc(sx, sy, radius + 4 * camera.zoom, 0, Math.PI * 2);
+            if (isCoilTarget) {
+                const pulse = 0.3 + Math.sin(Date.now() / 100) * 0.2;
+                ctx.fillStyle = `rgba(255,0,0,${pulse})`;
+            } else {
+                ctx.fillStyle = data.colors[colorIdx] + '30';
+            }
             ctx.fill();
 
-            // Body
             ctx.beginPath();
-            ctx.arc(sx, sy, r, 0, Math.PI * 2);
-            ctx.fillStyle = snake.colors[colorIdx];
+            ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+            ctx.fillStyle = data.colors[colorIdx];
             ctx.fill();
 
-            // Highlight
             ctx.beginPath();
-            ctx.arc(sx - r * 0.25, sy - r * 0.25, r * 0.4, 0, Math.PI * 2);
+            ctx.arc(sx - radius * 0.25, sy - radius * 0.25, radius * 0.4, 0, Math.PI * 2);
             ctx.fillStyle = 'rgba(255,255,255,0.2)';
             ctx.fill();
         }
 
         // Eyes
-        const head = snake.segments[0];
+        const head = local.segments[0];
         const hx = (head.x - camera.x) * camera.zoom + canvas.width / 2;
         const hy = (head.y - camera.y) * camera.zoom + canvas.height / 2;
-        const hr = radius * camera.zoom;
-        const eyeAngle = snake.angle;
-        const eyeOffset = hr * 0.45;
-        const eyeR = hr * 0.35;
-        const pupilR = hr * 0.18;
+        const eyeOffset = radius * 0.45;
+        const eyeR = radius * 0.35;
+        const pupilR = radius * 0.18;
+        const eyeAngle = data.angle;
 
         for (let side = -1; side <= 1; side += 2) {
             const ex = hx + Math.cos(eyeAngle + side * 0.5) * eyeOffset;
@@ -377,19 +556,26 @@
         }
 
         // Name
-        ctx.fillStyle = snake.id === myId ? '#0f0' : '#fff';
+        const isMe = id === myId;
+        ctx.fillStyle = isMe ? '#0f0' : '#fff';
         ctx.font = `bold ${14 * camera.zoom}px 'Segoe UI', Arial`;
         ctx.textAlign = 'center';
-        ctx.fillText(snake.name, hx, hy - hr - 10 * camera.zoom);
+        ctx.fillText(data.name, hx, hy - radius - 10 * camera.zoom);
+
+        // Beast mode indicator on self
+        if (isMe && beastMode) {
+            ctx.font = `bold ${10 * camera.zoom}px monospace`;
+            ctx.fillStyle = 'rgba(255,0,80,0.8)';
+            ctx.fillText('\u26A1', hx, hy - radius - 24 * camera.zoom);
+        }
     }
 
     function drawParticles() {
         for (let i = particles.length - 1; i >= 0; i--) {
             const p = particles[i];
             p.x += p.vx; p.y += p.vy;
-            p.life -= 0.02; p.vx *= 0.96; p.vy *= 0.96;
+            p.life -= 0.03; p.vx *= 0.95; p.vy *= 0.95;
             if (p.life <= 0) { particles.splice(i, 1); continue; }
-
             const sx = (p.x - camera.x) * camera.zoom + canvas.width / 2;
             const sy = (p.y - camera.y) * camera.zoom + canvas.height / 2;
             ctx.globalAlpha = p.life;
@@ -402,48 +588,47 @@
     }
 
     function drawMinimap() {
-        const me = snakes.find(s => s.id === myId);
+        const me = serverSnakes.get(myId);
         if (!me || !me.alive || !CONFIG.WORLD_SIZE) return;
-
         const mCtx = minimapCtx;
         const mw = 180, mh = 180;
         const scale = mw / CONFIG.WORLD_SIZE;
-
         mCtx.clearRect(0, 0, mw, mh);
         mCtx.fillStyle = 'rgba(0,0,0,0.6)';
         mCtx.fillRect(0, 0, mw, mh);
         mCtx.strokeStyle = 'rgba(255,255,255,0.15)';
         mCtx.strokeRect(0, 0, mw, mh);
 
-        for (const snake of snakes) {
-            if (!snake.alive || !snake.segments.length) continue;
-            const bx = (snake.segments[0].x + CONFIG.WORLD_SIZE / 2) * scale;
-            const by = (snake.segments[0].y + CONFIG.WORLD_SIZE / 2) * scale;
+        for (const [id, snake] of serverSnakes) {
+            if (!snake.alive) continue;
+            const bx = (snake.x + CONFIG.WORLD_SIZE / 2) * scale;
+            const by = (snake.y + CONFIG.WORLD_SIZE / 2) * scale;
+            const isMe = id === myId;
             mCtx.beginPath();
-            mCtx.arc(bx, by, snake.id === myId ? 4 : 2, 0, Math.PI * 2);
-            mCtx.fillStyle = snake.id === myId ? '#0f0' : snake.colors[0] + '80';
+            mCtx.arc(bx, by, isMe ? 4 : 2, 0, Math.PI * 2);
+            mCtx.fillStyle = isMe ? '#0f0' : (snake.colors ? snake.colors[0] + '80' : '#fff');
             mCtx.fill();
         }
 
         const vw = (canvas.width / camera.zoom) * scale;
         const vh = (canvas.height / camera.zoom) * scale;
-        const px = (me.segments[0].x + CONFIG.WORLD_SIZE / 2) * scale;
-        const py = (me.segments[0].y + CONFIG.WORLD_SIZE / 2) * scale;
+        const px = (me.x + CONFIG.WORLD_SIZE / 2) * scale;
+        const py = (me.y + CONFIG.WORLD_SIZE / 2) * scale;
         mCtx.strokeStyle = 'rgba(255,255,255,0.4)';
         mCtx.lineWidth = 1;
         mCtx.strokeRect(px - vw / 2, py - vh / 2, vw, vh);
     }
 
+    let lastLeaderboard = 0;
     function updateLeaderboard() {
-        const sorted = [...snakes].filter(s => s.alive).sort((a, b) => b.score - a.score).slice(0, 10);
+        const sorted = [...serverSnakes.values()].filter(s => s.alive).sort((a, b) => b.score - a.score).slice(0, 10);
         const container = document.getElementById('leaderboard');
         while (container.children.length > 1) container.removeChild(container.lastChild);
-
         sorted.forEach((snake, i) => {
             const entry = document.createElement('div');
             entry.className = snake.id === myId ? 'entry self' : 'entry';
             const dot = document.createElement('span');
-            dot.style.color = snake.colors[0];
+            dot.style.color = snake.colors ? snake.colors[0] : '#fff';
             dot.textContent = '\u25CF ' + (i + 1) + '. ' + snake.name;
             const sc = document.createElement('span');
             sc.textContent = snake.score;
@@ -454,51 +639,51 @@
     }
 
     function updateUI() {
-        const me = snakes.find(s => s.id === myId);
+        const me = serverSnakes.get(myId);
         if (me && me.alive) {
-            document.getElementById('score').textContent = 'Skor: ' + me.score + ' | Uzunluk: ' + me.segments.length;
+            const modeText = beastMode ? ' | \u26A1' : '';
+            document.getElementById('score').textContent = 'Skor: ' + me.score + ' | Uzunluk: ' + me.len + modeText;
             document.getElementById('boost-bar').style.width = me.boostEnergy + '%';
         }
     }
 
     // ============== GAME LOOP ==============
-    let lastLeaderboardUpdate = 0;
-
     function gameLoop(timestamp) {
         ctx.fillStyle = '#0a0a15';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         if (gameRunning) {
+            predictOwnSnake();
+            tickLocalSegments();
             drawGrid();
             drawBoundary();
             drawFoods();
 
-            // Draw other snakes first, then self on top
-            for (const snake of snakes) {
-                if (snake.id !== myId) drawSnake(snake);
+            // Draw others first, self on top
+            for (const id of serverSnakes.keys()) {
+                if (id !== myId) drawSnake(id);
             }
-            const me = snakes.find(s => s.id === myId);
-            if (me) drawSnake(me);
+            drawSnake(myId);
 
             drawParticles();
             drawMinimap();
             updateUI();
 
-            if (timestamp - lastLeaderboardUpdate > 1000) {
+            if (timestamp - lastLeaderboard > 1000) {
                 updateLeaderboard();
-                lastLeaderboardUpdate = timestamp;
+                lastLeaderboard = timestamp;
             }
         }
 
         // Cursor
         ctx.beginPath();
         ctx.arc(mouseX, mouseY, 6, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.strokeStyle = beastMode ? 'rgba(255,0,80,0.8)' : 'rgba(255,255,255,0.6)';
         ctx.lineWidth = 2;
         ctx.stroke();
         ctx.beginPath();
         ctx.arc(mouseX, mouseY, 2, 0, Math.PI * 2);
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = beastMode ? '#ff0050' : '#fff';
         ctx.fill();
 
         requestAnimationFrame(gameLoop);

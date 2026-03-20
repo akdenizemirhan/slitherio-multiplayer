@@ -22,7 +22,7 @@ const CONFIG = {
     TURN_SPEED: 0.08,
     BOOST_DRAIN: 0.4,
     BOOST_RECHARGE: 0.15,
-    BOT_COUNT: 10,
+    BOT_COUNT: 6,
     BOT_TURN_SPEED: 0.05,
     TICK_RATE: 30,
 };
@@ -166,14 +166,15 @@ class Snake {
         return {
             id: this.id,
             name: this.name,
-            segments: this.segments,
+            x: this.segments[0].x,
+            y: this.segments[0].y,
             angle: this.angle,
+            len: this.segments.length,
             alive: this.alive,
             boosting: this.boosting,
             boostEnergy: this.boostEnergy,
             score: this.score,
             colors: this.colors,
-            colorIndex: this.colorIndex,
         };
     }
 }
